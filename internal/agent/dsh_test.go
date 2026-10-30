@@ -195,14 +195,14 @@ func TestDshModelLimits(t *testing.T) {
 	}
 	b, _ := yaml.Marshal(dshRouteConfig(magpieModels("dsh"), "", gateway.URL()))
 	s := string(b)
-	want := `    - id: v/see
+	want := `    - id: v/plain
+      name: plain · V
+      input: [text]
+    - id: v/see
       name: see · V
       contextWindow: 400000
       maxTokens: 128000
-      input: [text, image]
-    - id: v/plain
-      name: plain · V
-      input: [text]`
+      input: [text, image]`
 	if !strings.Contains(s, want) || strings.Count(s, "contextWindow") != 1 {
 		t.Fatalf("models:\n%s", s)
 	}

@@ -63,8 +63,8 @@ func TestPluggedKeepsPluginOrder(t *testing.T) {
 	s := string(b)
 	inOrder(t, s, `"$schema"`, "// mine", `"theme": "tokyonight"`, `"provider"`, `"zeta": 1`, `"alpha": 2`, `"autoupdate": false`)
 	inOrder(t, s, `"magpie"`, `"name": "magpie"`, `"npm"`, `"options"`, `"baseURL"`, `"apiKey"`, `"models"`)
-	// magpie's catalog order, then each model's variants weakest first
-	inOrder(t, s, `"deepseek/pro"`, `"low"`, `"medium"`, `"high"`, `"deepseek/flash"`, `"low"`, `"medium"`, `"high"`)
+	// A-Z by name, then each model's variants weakest first
+	inOrder(t, s, `"deepseek/flash"`, `"low"`, `"medium"`, `"high"`, `"deepseek/pro"`, `"low"`, `"medium"`, `"high"`)
 
 	// its own model puts the file back as it was
 	if err := a.Field("model").Set("anthropic/claude"); err != nil {

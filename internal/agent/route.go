@@ -182,7 +182,9 @@ func firstOf(xs []string) string {
 }
 
 // magpieModels is the catalog as agent is shown it, as catalog.Models, for
-// agents that keep their own model files.
+// agents that keep their own model files. A list is A-Z by the name the
+// agent shows each model by, unless the user dragged an order for the agent
+// on the Agents page: that order is theirs, and every write follows it.
 func magpieModels(agent string) []catalog.Model {
 	// the providers built once for all the models' prices, not for each:
 	// dsh's round at every start built them for each of hundreds
@@ -261,6 +263,19 @@ func magpieModels(agent string) []catalog.Model {
 			m.CodexFast = provider.CanFast(e.Provider, e.Model)
 		}
 		out = append(out, m)
+	}
+	// A list magpie writes is A-Z by the name the agent shows the model by,
+	// so a person reading a config finds a model as they would in an
+	// alphabetical list, not as the catalog groups it by provider. An order
+	// the user dragged on the Agents page is theirs and every write follows
+	// it instead (#855, #1052).
+	if len(provider.ModelOrder(agent)) == 0 {
+		slices.SortStableFunc(out, func(a, b catalog.Model) int {
+			if c := strings.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name)); c != 0 {
+				return c
+			}
+			return strings.Compare(a.ID, b.ID)
+		})
 	}
 	return out
 }
