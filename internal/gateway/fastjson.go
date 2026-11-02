@@ -95,17 +95,26 @@ var heldBodies struct {
 	list atomic.Pointer[[][]byte]
 	// facts: a held body's bodyFacts, by the body's first byte (factsOf)
 	facts map[*byte]heldFacts
-	// long: what longBody found of a held body, by its first byte
-	long map[*byte]heldLong
+	// long: what longBody found of a held body's windows, by the body's
+	// first byte and the window's place in it
+	long map[*byte]map[longSlot]heldLong
 }
 
-// heldLong is what longBody found of a held body: valid or not, and its
-// top level's members.
+// heldLong is what longBody found of a held body, or of a window of one:
+// valid or not, and its top level's members.
 type heldLong struct {
-	n       int
 	valid   bool
 	members []memberSpan
 }
+
+// longSlot is a window of a held body: its first byte's offset in the
+// body, and its length.
+type longSlot struct{ off, n int }
+
+// heldLongMost bounds the windows of one held body whose finding is kept:
+// a body of many long values would otherwise hold an entry for each of
+// them. Past it a window is checked again on each decode, as before.
+const heldLongMost = 256
 
 // heldBodiesMost bounds heldBodies: a body past it is decoded with copies, as
 // before, rather than the list growing with requests whose context never
@@ -175,18 +184,25 @@ var checkHeldBody func(body []byte) (released func())
 // heldShareMost times its own size. The values worth sharing are the big
 // ones, the messages and the long turns, which each reader copied whole.
 func inHeldBody(raw []byte) bool {
+	b, _, ok := heldBodyAt(raw)
+	return ok && len(raw)*heldShareMost >= len(b)
+}
+
+// heldBodyAt is the body holdBody holds that data lies in, and data's
+// first byte from that body's, or nil and false.
+func heldBodyAt(data []byte) (body []byte, off int, ok bool) {
 	l := heldBodies.list.Load()
-	if l == nil || len(raw) == 0 {
-		return false
+	if l == nil || len(data) == 0 {
+		return nil, 0, false
 	}
-	p := uintptr(unsafe.Pointer(unsafe.SliceData(raw)))
+	p := uintptr(unsafe.Pointer(unsafe.SliceData(data)))
 	for _, b := range *l {
 		s := uintptr(unsafe.Pointer(unsafe.SliceData(b)))
-		if p >= s && p+uintptr(len(raw)) <= s+uintptr(len(b)) {
-			return len(raw)*heldShareMost >= len(b)
+		if p >= s && p+uintptr(len(data)) <= s+uintptr(len(b)) {
+			return b, int(p - s), true
 		}
 	}
-	return false
+	return nil, 0, false
 }
 
 // misfit is the closing bracket of the array or object that open starts
@@ -909,24 +925,26 @@ func validHash(data []byte) uint64 {
 var validHashed atomic.Pointer[func(data []byte)]
 
 // heldLongOf is what longBody finds of data when data is a body being
-// served (holdBody), whole, and whether it is one. A held body is not
-// written while held, so it is known again by where it is, not by a hash
-// of all its bytes: each of the dozen decodes a request went through
-// summed its whole body, a twentieth of the gateway's CPU on long Codex
-// requests (#4371). What is found is kept until the body is released.
+// served (holdBody), or a window of one, and whether it is one. A held
+// body is not written while held, so a window of it is as good a thing to
+// remember as the body itself: each of the dozen decodes a request went
+// through summed its whole body, a twentieth of the gateway's CPU on long
+// Codex requests (#4371), and each of the values a reader decodes from it
+// — an image's block, a long message — was summed and checked whole
+// again, a 20 MB request with 8 images checked its 2.5 MB blocks 59 times
+// (#4836). What is found is kept until the body is released.
 func heldLongOf(data []byte) (heldLong, bool) {
-	key := unsafe.SliceData(data)
-	heldBodies.Lock()
-	e, ok := heldBodies.long[key]
-	heldBodies.Unlock()
-	if ok && e.n == len(data) {
-		return e, true
-	}
-	l := heldBodies.list.Load()
-	if l == nil || !slices.ContainsFunc(*l, func(b []byte) bool { return unsafe.SliceData(b) == key && len(b) == len(data) }) {
+	body, off, held := heldBodyAt(data)
+	if !held {
 		return heldLong{}, false
 	}
-	e = heldLong{n: len(data)}
+	at, slot := unsafe.SliceData(body), longSlot{off, len(data)}
+	heldBodies.Lock()
+	e, ok := heldBodies.long[at][slot]
+	heldBodies.Unlock()
+	if ok {
+		return e, true
+	}
 	if f := validScanned.Load(); f != nil {
 		(*f)(data)
 	}
@@ -946,11 +964,20 @@ func heldLongOf(data []byte) (heldLong, bool) {
 	defer heldBodies.Unlock()
 	// only while body is held: one released may be freed, and its memory
 	// given to another body that would read as this one (factsOf)
-	if l := heldBodies.list.Load(); l != nil && slices.ContainsFunc(*l, func(b []byte) bool { return unsafe.SliceData(b) == key && len(b) == len(data) }) {
+	if l := heldBodies.list.Load(); l != nil && slices.ContainsFunc(*l, func(b []byte) bool {
+		return unsafe.SliceData(b) == at && len(b) >= off+len(data)
+	}) {
 		if heldBodies.long == nil {
-			heldBodies.long = map[*byte]heldLong{}
+			heldBodies.long = map[*byte]map[longSlot]heldLong{}
 		}
-		heldBodies.long[key] = e
+		m := heldBodies.long[at]
+		if m == nil {
+			m = map[longSlot]heldLong{}
+			heldBodies.long[at] = m
+		}
+		if len(m) < heldLongMost {
+			m[slot] = e
+		}
 	}
 	return e, true
 }
