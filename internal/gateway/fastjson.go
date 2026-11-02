@@ -691,11 +691,20 @@ func unquoteJSON(q []byte) (string, bool) {
 	s := q[1 : len(q)-1]
 	r := 0
 	for r < len(s) {
-		c := s[r]
-		if c == '\\' || c == '"' || c < ' ' {
+		// A run of a string's plain bytes is skipped 8 at a time: a
+		// screenshot's base64 is 2.6 MB of them, and one at a time
+		// cost more than the copy that follows.
+		for r+8 <= len(s) && !stopsPlainRun(binary.LittleEndian.Uint64(s[r:])) {
+			r += 8
+		}
+		if r >= len(s) {
 			break
 		}
+		c := s[r]
 		if c < utf8.RuneSelf {
+			if c == '\\' || c == '"' || c < ' ' {
+				break
+			}
 			r++
 			continue
 		}
@@ -1085,6 +1094,27 @@ func stopsString(x uint64) bool {
 	const ones, highs = 0x0101010101010101, 0x8080808080808080
 	quote, slash := x^(ones*'"'), x^(ones*'\\')
 	return ((x-ones*0x20)&^x|(quote-ones)&^quote|(slash-ones)&^slash)&highs != 0
+}
+
+// stopsPlainRun says whether any of the 8 bytes of x ends a run of a
+// string's plain bytes: one that stopsString names, or one that starts a
+// rune, which is decoded one at a time.
+func stopsPlainRun(x uint64) bool {
+	const highs = 0x8080808080808080
+	return x&highs != 0 || stopsString(x)
+}
+
+// stopsSizeRun is stopsPlainRun for the bytes json.Marshal writes: it also
+// stops at <, > and &, which it escapes.
+func stopsSizeRun(x uint64) bool {
+	if stopsPlainRun(x) {
+		return true
+	}
+	const ones, highs = 0x0101010101010101, 0x8080808080808080
+	lt, gt := x^ones*'<', x^ones*'>'
+	amp := x ^ ones*'&'
+	return (lt-ones)&^lt&highs != 0 || (gt-ones)&^gt&highs != 0 ||
+		(amp-ones)&^amp&highs != 0
 }
 
 func validJSONString(data []byte, i int) (int, bool) {
@@ -1871,7 +1901,17 @@ func plainJSONKey(k string) bool {
 // jsonStringSize is how long json.Marshal(s) is.
 func jsonStringSize(s string) int {
 	n := 2
+	b := unsafe.Slice(unsafe.StringData(s), len(s))
 	for i := 0; i < len(s); {
+		// As in unquoteJSON: plain bytes, which a long base64 or text is
+		// made of, are counted 8 at a time.
+		for i+8 <= len(s) && !stopsSizeRun(binary.LittleEndian.Uint64(b[i:])) {
+			i += 8
+			n += 8
+		}
+		if i == len(s) {
+			break
+		}
 		c := s[i]
 		if c < utf8.RuneSelf {
 			switch {
@@ -1903,7 +1943,15 @@ func appendJSONString(dst []byte, s string) []byte {
 	const hex = "0123456789abcdef"
 	dst = append(dst, '"')
 	start := 0
+	b := unsafe.Slice(unsafe.StringData(s), len(s))
 	for i := 0; i < len(s); {
+		// As in unquoteJSON: a run of plain bytes is skipped 8 at a time.
+		for i+8 <= len(s) && !stopsSizeRun(binary.LittleEndian.Uint64(b[i:])) {
+			i += 8
+		}
+		if i == len(s) {
+			break
+		}
 		c := s[i]
 		if c < utf8.RuneSelf {
 			if c >= 0x20 && c != '"' && c != '\\' && c != '<' && c != '>' && c != '&' {
