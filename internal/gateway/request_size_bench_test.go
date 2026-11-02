@@ -40,10 +40,12 @@ func smallChat(size int) []byte {
 }
 
 // heicChat is a chat request of images HEIC images about a conversation
-// padded to pad bytes. The fixtures are the 32x24 HEICs of testdata
-// (macOS's own encoder), so what they measure is the request's way there
-// — finding the image, and the JSON around it — not the decode of a 48 MP
-// phone photo, which no encoder here can write.
+// of about pad bytes, spread over its turns as a conversation's long
+// context is — not one huge message, which no client sends. The fixtures
+// are the 32x24 HEICs of testdata (macOS's own encoder), so what they
+// measure is the request's way there — finding the image, and the JSON
+// around it — not the decode of a 48 MP phone photo, which no encoder
+// here can write.
 func heicChat(images, pad int) []byte {
 	raw, err := os.ReadFile("testdata/opaque.heic")
 	if err != nil {
@@ -51,13 +53,23 @@ func heicChat(images, pad int) []byte {
 	}
 	url := "data:image/heic;base64," + base64.StdEncoding.EncodeToString(raw)
 	type m = map[string]any
-	msgs := []any{m{"role": "system", "content": strings.Repeat("You are a coding agent. ", pad/25+1)}}
-	for range images {
-		msgs = append(msgs,
-			m{"role": "user", "content": []any{m{"type": "image_url", "image_url": m{"url": url}}, m{"type": "text", "text": "what is this?"}}},
-			m{"role": "assistant", "content": "an icon"})
+	const turns = 32
+	per := 0
+	if pad > 0 {
+		per = pad / turns
 	}
-	msgs = append(msgs, m{"role": "user", "content": "go on"})
+	msgs := []any{m{"role": "system", "content": "You are a coding agent."}}
+	for i := range turns {
+		text := "go on"
+		if per > 0 {
+			text = strings.Repeat("The function reads the file and returns the lines. ", per/54+1)
+		}
+		var content any = text
+		if i < images {
+			content = []any{m{"type": "image_url", "image_url": m{"url": url}}, m{"type": "text", "text": text}}
+		}
+		msgs = append(msgs, m{"role": "user", "content": content}, m{"role": "assistant", "content": "ok"})
+	}
 	b, _ := json.Marshal(m{"model": "fake/m1", "stream": false, "messages": msgs})
 	return b
 }
