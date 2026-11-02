@@ -100,6 +100,12 @@ func walkImages(proto provider.Protocol, body []byte, swap func(imageAt) (json.R
 	at := &swapAt{ok: spliceable}
 	changed := false
 	for i, raw := range turns {
+		if !anyImageInTurn(proto, raw, contentKey) {
+			// most turns are text and tool output, and each was decoded
+			// to find that out: on a 2 MB conversation the walk was 13ms,
+			// nine of them decoding turns with no image in them
+			continue
+		}
 		var turn map[string]json.RawMessage
 		if decodeJSON(raw, &turn) != nil {
 			continue
@@ -250,15 +256,24 @@ func anyImageTurn(proto provider.Protocol, body []byte, turnsKey, contentKey str
 func anyImageBlock(proto provider.Protocol, turns []byte, contentKey string) bool {
 	found := false
 	eachElement(turns, func(turn []byte) bool {
-		if turn[0] != '{' {
-			return true
+		found = anyImageInTurn(proto, turn, contentKey)
+		return !found
+	})
+	return found
+}
+
+// anyImageInTurn is whether one of body's turns may hold a block
+// walkImages gives to swap (anyImageBlock), read in place: a turn with no
+// image in it is not decoded at all.
+func anyImageInTurn(proto provider.Protocol, turn []byte, contentKey string) bool {
+	if len(turn) == 0 || turn[0] != '{' {
+		return false
+	}
+	found := false
+	eachMember(turn, func(key, val []byte) bool {
+		if len(val) > 0 && val[0] == '[' && (jsonStringIs(key, contentKey) || (proto == provider.Responses && jsonStringIs(key, "output"))) {
+			found = anyImageIn(proto, val)
 		}
-		eachMember(turn, func(key, val []byte) bool {
-			if val[0] == '[' && (jsonStringIs(key, contentKey) || (proto == provider.Responses && jsonStringIs(key, "output"))) {
-				found = anyImageIn(proto, val)
-			}
-			return !found
-		})
 		return !found
 	})
 	return found
