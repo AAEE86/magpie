@@ -44,7 +44,7 @@ func fromLite(body []byte) []byte {
 // withoutReasoningContext is body without reasoning.context, the rest of
 // reasoning and every other member byte for byte as they were.
 func withoutReasoningContext(body []byte) []byte {
-	if !bytes.Contains(body, []byte(`"context"`)) {
+	if !bodyHas(body, `"context"`) {
 		return body
 	}
 	r, found, ok := topMember(body, "reasoning")
@@ -108,7 +108,7 @@ const liteNamespace = "functions"
 // 4 MB conversation, held at once by each request in flight, so a few
 // subagents at once took the app toward 2 GB (XiaoYin_OK on X).
 func liftAdditionalTools(body []byte) []byte {
-	if !bytes.Contains(body, []byte(`"additional_tools"`)) {
+	if !bodyHas(body, `"additional_tools"`) {
 		return body
 	}
 	in, found, ok := topMember(body, "input")

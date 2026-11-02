@@ -95,6 +95,9 @@ var heldBodies struct {
 	list atomic.Pointer[[][]byte]
 	// facts: a held body's bodyFacts, by the body's first byte (factsOf)
 	facts map[*byte]heldFacts
+	// quotes: the offsets of a held body's quote bytes, by its first byte
+	// (bodyHas)
+	quotes map[*byte]heldQuotes
 	// long: what longBody found of a held body's windows, by the body's
 	// first byte and the window's place in it
 	long map[*byte]map[longSlot]heldLong
@@ -163,6 +166,7 @@ func holdBody(ctx context.Context, body []byte) {
 			return
 		}
 		delete(heldBodies.facts, unsafe.SliceData(body))
+		delete(heldBodies.quotes, unsafe.SliceData(body))
 		delete(heldBodies.long, unsafe.SliceData(body))
 		next := slices.Delete(slices.Clone(cur), i, i+1)
 		heldBodies.list.Store(&next)

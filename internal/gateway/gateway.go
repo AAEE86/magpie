@@ -1785,7 +1785,7 @@ func (s *Server) handle(from provider.Protocol) http.HandlerFunc {
 			// which magpie points here, #1301): the summary is magpie's to
 			// make, as on CodexPath, and magpie's summaries go back as text;
 			// a provider set to compact natively is asked Codex's own (#1099)
-			if bytes.Contains(body, []byte(`"compaction`)) {
+			if bodyHas(body, `"compaction`) {
 				var compact bool
 				if body, compact = codexInputAs(body, true, s.nativeCompactionFor(modelOf(body))); compact {
 					s.codexCompact(w, r, body)
