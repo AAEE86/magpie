@@ -1518,7 +1518,7 @@ func (s *Server) countTokens(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// counted as the HEIC photos in it will be sent (heic.go)
-	body = heicAsJPEG(provider.Anthropic, body)
+	body = heicAsJPEG(r.Context(), provider.Anthropic, body)
 	var err error
 	var model string
 	body, model, err = requestModel(body)
@@ -1896,7 +1896,7 @@ func (s *Server) serve(w http.ResponseWriter, r *http.Request, from provider.Pro
 	body = offAsNone(from, body)
 	// a HEIC photo goes as JPEG (or PNG), which every vendor takes, on
 	// every route below (heic.go)
-	body = heicAsJPEG(from, body)
+	body = heicAsJPEG(r.Context(), from, body)
 	// the upstream names in force for this request, read once here rather
 	// than once per place a name is looked up below
 	r = withWires(r)

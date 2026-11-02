@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"strings"
@@ -91,6 +92,12 @@ func walkImages(proto provider.Protocol, body []byte, swap func(imageAt) (json.R
 	if decodeJSON(request[turnsKey], &turns) != nil {
 		return body, nil
 	}
+	// where each turn is in the body's own bytes, to write a swapped
+	// block in its place rather than write the whole body again: a 1.6 KB
+	// HEIC in a 2 MB conversation cost 31ms, two thirds of it marshalling
+	// the body around it (#4836)
+	spans, spliceable := turnSpans(body, turns)
+	at := &swapAt{ok: spliceable}
 	changed := false
 	for i, raw := range turns {
 		var turn map[string]json.RawMessage
@@ -110,7 +117,12 @@ func walkImages(proto provider.Protocol, body []byte, swap func(imageAt) (json.R
 			decodeJSON(turn["role"], &kind)
 			tool = kind == "tool"
 		}
-		content, swapped, err := swapImageBlocks(proto, turn[key], i == len(turns)-1, tool, swap)
+		if spliceable {
+			at.loc = &locator{body: body, from: spans[i][0], to: spans[i][1]}
+		} else {
+			at.loc = nil
+		}
+		content, swapped, err := swapImageBlocks(proto, turn[key], i == len(turns)-1, tool, swap, at)
 		if err != nil {
 			return body, err
 		}
@@ -124,8 +136,87 @@ func walkImages(proto provider.Protocol, body []byte, swap func(imageAt) (json.R
 	if !changed {
 		return body, nil
 	}
+	if at.ok {
+		return spliceEdits(body, at.edits), nil
+	}
 	request[turnsKey], _ = json.Marshal(turns)
 	return json.Marshal(request)
+}
+
+// imageEdit is a block of the body replaced by another: what a walk
+// swapped, and where in the body's own bytes it was.
+type imageEdit struct {
+	at, end int
+	out     json.RawMessage
+}
+
+// swapAt is where a walk's swaps go. When every block it swapped was
+// found in the body as it came, they are spliced in and the rest of the
+// body is left the bytes it arrived with, in the order it arrived in; when
+// one wasn't (a value escaped or spaced differently from what the decode
+// reads), ok is false and the body is written again as before.
+type swapAt struct {
+	loc   *locator
+	edits []imageEdit
+	ok    bool
+}
+
+// locator is where a turn's blocks are, by the turn's place in the body.
+// Its search goes only forward: a turn's blocks are visited in the order
+// the turn holds them, so the next one is after the last.
+type locator struct {
+	body     []byte
+	from, to int
+}
+
+// find is where raw is in the turn, and false when it is not there as it
+// came.
+func (l *locator) find(raw []byte) (int, bool) {
+	if len(raw) == 0 || l.from >= l.to {
+		return 0, false
+	}
+	j := bytes.Index(l.body[l.from:l.to], raw)
+	if j < 0 {
+		return 0, false
+	}
+	i := l.from + j
+	l.from = i + len(raw)
+	return i, true
+}
+
+// spliceEdits is body with each edit's block in its place.
+func spliceEdits(body []byte, edits []imageEdit) []byte {
+	n := len(body)
+	for _, e := range edits {
+		n += len(e.out) - (e.end - e.at)
+	}
+	out := make([]byte, 0, n)
+	last := 0
+	for _, e := range edits {
+		out = append(out, body[last:e.at]...)
+		out = append(out, e.out...)
+		last = e.end
+	}
+	return append(out, body[last:]...)
+}
+
+// turnSpans is where each of body's turns is, and false when one of them
+// is not found in it as it came.
+func turnSpans(body []byte, turns []json.RawMessage) ([][2]int, bool) {
+	spans := make([][2]int, len(turns))
+	from := 0
+	for i, raw := range turns {
+		if len(raw) == 0 {
+			return nil, false
+		}
+		j := bytes.Index(body[from:], raw)
+		if j < 0 {
+			return nil, false
+		}
+		spans[i] = [2]int{from + j, from + j + len(raw)}
+		from += j + len(raw)
+	}
+	return spans, true
 }
 
 // anyImageTurn is whether body may hold a block walkImages gives to swap:
@@ -224,7 +315,7 @@ func anyImageIn(proto provider.Protocol, blocks []byte) bool {
 
 // swapImageBlocks swaps the images among a turn's blocks, and those in an
 // Anthropic tool_result's, which are a tool's.
-func swapImageBlocks(proto provider.Protocol, raw json.RawMessage, last, tool bool, swap func(imageAt) (json.RawMessage, error)) (json.RawMessage, bool, error) {
+func swapImageBlocks(proto provider.Protocol, raw json.RawMessage, last, tool bool, swap func(imageAt) (json.RawMessage, error), at *swapAt) (json.RawMessage, bool, error) {
 	var blocks []json.RawMessage
 	if decodeJSON(raw, &blocks) != nil {
 		return raw, false, nil
@@ -244,6 +335,13 @@ func swapImageBlocks(proto provider.Protocol, raw json.RawMessage, last, tool bo
 				return raw, false, err
 			}
 			if out != nil {
+				if at != nil && at.ok {
+					if j, ok := at.loc.find(rawBlock); ok {
+						at.edits = append(at.edits, imageEdit{at: j, end: j + len(rawBlock), out: out})
+					} else {
+						at.ok = false
+					}
+				}
 				blocks[i] = out
 				swapped = true
 			}
@@ -253,7 +351,7 @@ func swapImageBlocks(proto provider.Protocol, raw json.RawMessage, last, tool bo
 		if proto == provider.Gemini && len(block["functionResponse"]) > 0 {
 			var fr map[string]json.RawMessage
 			if decodeJSON(block["functionResponse"], &fr) == nil && len(fr["parts"]) > 0 {
-				content, nested, err := swapImageBlocks(proto, fr["parts"], last, true, swap)
+				content, nested, err := swapImageBlocks(proto, fr["parts"], last, true, swap, at)
 				if err != nil {
 					return raw, false, err
 				}
@@ -266,7 +364,7 @@ func swapImageBlocks(proto provider.Protocol, raw json.RawMessage, last, tool bo
 			}
 		}
 		if proto == provider.Anthropic && kind == "tool_result" {
-			content, nested, err := swapImageBlocks(proto, block["content"], last, true, swap)
+			content, nested, err := swapImageBlocks(proto, block["content"], last, true, swap, at)
 			if err != nil {
 				return raw, false, err
 			}
@@ -274,6 +372,9 @@ func swapImageBlocks(proto provider.Protocol, raw json.RawMessage, last, tool bo
 				block["content"] = content
 				blocks[i], _ = json.Marshal(block)
 				swapped = true
+				if at != nil {
+					at.ok = false // the block around the swap is written again
+				}
 			}
 		}
 	}

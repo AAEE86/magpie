@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -92,7 +93,7 @@ func mayHoldHEIC(body []byte) bool {
 
 // heicAsJPEG is the body with each HEIC image in it written as JPEG (PNG
 // with transparency); the body as it came when there is none.
-func heicAsJPEG(proto provider.Protocol, body []byte) []byte {
+func heicAsJPEG(ctx context.Context, proto provider.Protocol, body []byte) []byte {
 	if !mayHoldHEIC(body) {
 		return body
 	}
@@ -110,6 +111,13 @@ func heicAsJPEG(proto provider.Protocol, body []byte) []byte {
 	if err != nil {
 		return body
 	}
+	if len(out) == len(body) && (len(out) == 0 || &out[0] == &body[0]) {
+		return body // nothing swapped: the body it came with
+	}
+	// A rewritten body is a body of its own, and the request's readers
+	// share and check it as they do the one that came in: held while the
+	// request is served, or each reader copies it and checks it again.
+	holdBody(ctx, out)
 	return out
 }
 

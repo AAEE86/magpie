@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"image"
@@ -102,7 +103,7 @@ func TestHEICGoesAsJPEG(t *testing.T) {
 			if !mayHoldHEIC([]byte(c.body)) {
 				t.Fatal("the scan missed the HEIC")
 			}
-			out := heicAsJPEG(c.proto, []byte(c.body))
+			out := heicAsJPEG(context.Background(), c.proto, []byte(c.body))
 			if !json.Valid(out) {
 				t.Fatalf("not JSON: %.200s", out)
 			}
@@ -141,7 +142,7 @@ func TestHEICGoesAsJPEG(t *testing.T) {
 // What the JPEG shows is the photo: its colours come through the decoder,
 // not a blank of the right size.
 func TestHEICPixelsKept(t *testing.T) {
-	out := heicAsJPEG(provider.Chat, []byte(`{"messages":[{"role":"user","content":[{"type":"image_url","image_url":"data:image/heic;base64,`+heicFixture(t, "opaque.heic")+`"}]}]}`))
+	out := heicAsJPEG(context.Background(), provider.Chat, []byte(`{"messages":[{"role":"user","content":[{"type":"image_url","image_url":"data:image/heic;base64,`+heicFixture(t, "opaque.heic")+`"}]}]}`))
 	img, _ := sentImage(t, "", gjson.GetBytes(out, "messages.0.content.0.image_url").Str)
 	var lo, hi uint32 = 1 << 16, 0
 	for y := 0; y < 24; y++ {
@@ -176,7 +177,7 @@ func TestNonHEICImageUnchanged(t *testing.T) {
 		// the HEIC's base64 as text a user pasted is not an image
 		{provider.Chat, `{"messages":[{"role":"user","content":"` + heicFixture(t, "opaque.heic") + `"}]}`},
 	} {
-		if out := heicAsJPEG(c.proto, []byte(c.body)); !bytes.Equal(out, []byte(c.body)) {
+		if out := heicAsJPEG(context.Background(), c.proto, []byte(c.body)); !bytes.Equal(out, []byte(c.body)) {
 			t.Errorf("%s changed:\n%.300s\nto\n%.300s", c.proto, c.body, out)
 		}
 	}
@@ -199,14 +200,14 @@ func TestHEICUnconvertedGoesAsItCame(t *testing.T) {
 
 	cut, _ := base64.StdEncoding.DecodeString(opaque)
 	short := body(base64.StdEncoding.EncodeToString(cut[:len(cut)/2]))
-	if out := heicAsJPEG(provider.Chat, short); !bytes.Equal(out, short) {
+	if out := heicAsJPEG(context.Background(), provider.Chat, short); !bytes.Equal(out, short) {
 		t.Fatalf("a HEIC cut short changed: %.200s", out)
 	}
 
 	enc := heicEncode
 	t.Cleanup(func() { heicEncode = enc })
 	heicEncode = func([]byte) (string, []byte) { panic("bad file") }
-	if out := heicAsJPEG(provider.Chat, body(opaque)); !bytes.Equal(out, body(opaque)) {
+	if out := heicAsJPEG(context.Background(), provider.Chat, body(opaque)); !bytes.Equal(out, body(opaque)) {
 		t.Fatalf("a decoder's panic changed the body: %.200s", out)
 	}
 	reset()
@@ -221,7 +222,7 @@ func TestHEICUnconvertedGoesAsItCame(t *testing.T) {
 		<-release
 		return enc(raw)
 	}
-	if out := heicAsJPEG(provider.Chat, body(opaque)); !bytes.Equal(out, body(opaque)) {
+	if out := heicAsJPEG(context.Background(), provider.Chat, body(opaque)); !bytes.Equal(out, body(opaque)) {
 		t.Fatalf("a conversion past its wait changed the body: %.200s", out)
 	}
 	// finished later, it serves the next turn from the cache
@@ -239,7 +240,7 @@ func TestHEICUnconvertedGoesAsItCame(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	out := heicAsJPEG(provider.Chat, body(opaque))
+	out := heicAsJPEG(context.Background(), provider.Chat, body(opaque))
 	if _, mime := sentImage(t, "", gjson.GetBytes(out, "messages.0.content.0.image_url").Str); mime != "image/jpeg" {
 		t.Fatalf("the next turn sent %s", mime)
 	}
